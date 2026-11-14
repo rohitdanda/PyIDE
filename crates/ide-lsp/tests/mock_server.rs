@@ -146,6 +146,9 @@ impl Handler for MockHandler {
                 if let Some(gate) = gate {
                     gate.hold();
                 }
+                if let Some(error) = s.errors.lock().get("initialize").cloned() {
+                    return Err(error);
+                }
                 Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } }))
             }
             "shutdown" => Ok(Value::Null),
@@ -2098,6 +2101,35 @@ async fn gives_up_after_repeated_crashes_and_manual_restart_works() {
     h.mgr.restart(id).await.unwrap();
     assert_eq!(s.launches.load(Ordering::SeqCst), 5);
     assert_eq!(h.mgr.servers()[0].status, ServerStatus::Ready);
+}
+
+/// The `initialize` error is the crash report's reason, not "terminated unexpectedly", and
+/// a server that never gets past `initialize` gives up like any other crash loop.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_initialize_is_reported_with_its_reason_and_gives_up() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let s = h.launcher.state("mock");
+    s.errors.lock().insert("initialize".into(), (-32603, "no workspace".into()));
+    h.open("a.mk", "x");
+    let count = |status| h.statuses("mock").iter().filter(|s| **s == status).count();
+    eventually(|| count(ServerStatus::Crashed) == 4).await;
+    let messages: Vec<String> = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::LanguageServer { status: ServerStatus::Crashed, message, .. } => message.clone(),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        messages[0].contains("failed to start: initialize failed (server error -32603: no workspace)"),
+        "{messages:?}"
+    );
+    assert!(messages[0].ends_with("Restarting…"));
+    assert!(messages[3].ends_with("restart it manually."), "{messages:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 4, "initial start + 3 restarts");
 }
 
 /// The whole workspace root deleted: the server can never start again
