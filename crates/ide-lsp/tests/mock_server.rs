@@ -2186,6 +2186,41 @@ async fn a_failed_initialize_is_reported_with_its_reason_and_gives_up() {
     assert_eq!(s.launches.load(Ordering::SeqCst), 4, "initial start + 3 restarts");
 }
 
+/// The client tells servers it retries semantic tokens, inlay hints and code lens that they
+/// withdrew with `ContentModified` (`staleRequestSupport`), so it must.
+#[tokio::test(flavor = "multi_thread")]
+async fn withdrawn_editor_decoration_requests_are_asked_again() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "let x = 1");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let range = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":1}});
+    let cases = [
+        ("textDocument/semanticTokens/full", json!({ "data": [0, 0, 1, 0, 0] })),
+        ("textDocument/inlayHint", json!([{ "position": {"line":0,"character":0}, "label": "x" }])),
+        ("textDocument/codeLens", json!([{ "range": range, "command": { "title": "t", "command": "c" } }])),
+    ];
+    for (method, answer) in cases {
+        s.errors.lock().insert(method.into(), (-32801, "content modified".into()));
+        let mgr = h.mgr.clone();
+        let request = tokio::spawn(async move {
+            match method {
+                "textDocument/semanticTokens/full" => mgr.semantic_tokens(doc).await.map(|r| r.is_some()),
+                "textDocument/inlayHint" => {
+                    mgr.inlay_hints(doc, Range::new(Pos::new(0, 0), Pos::new(0, 9))).await.map(|v| v.len() == 1)
+                }
+                _ => mgr.code_lens(doc).await.map(|v| v.len() == 1),
+            }
+        });
+        eventually(|| !s.requested(method).is_empty()).await;
+        s.errors.lock().remove(method);
+        s.respond(method, answer);
+        let answered = tokio::time::timeout(Duration::from_secs(5), request).await.unwrap().unwrap();
+        assert!(answered.unwrap_or(false), "{method} was not asked again");
+        assert_eq!(s.requested(method).len(), 2, "{method}");
+    }
+}
+
 /// A server disabled in settings while its crash backoff is still sleeping stays gone: the
 /// pending restart must not bring it back as a process nothing lists or stops.
 #[tokio::test(flavor = "multi_thread")]

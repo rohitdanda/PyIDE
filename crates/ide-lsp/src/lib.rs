@@ -343,6 +343,10 @@ impl<T> Outcome<T> {
 /// How often a rename the server withdrew (`ContentModified`) is asked, and the pause between.
 const RENAME_ATTEMPTS: u32 = 5;
 const RENAME_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+/// How often a semantic tokens, inlay hints or code lens request the server withdrew
+/// (`ContentModified`) is asked again, and the pause between.
+const STALE_RETRIES: u32 = 2;
+const STALE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Implementation requests of one line-marker pass in flight at once.
 const IMPLEMENTATION_CONCURRENCY: usize = 4;
@@ -1479,6 +1483,28 @@ impl LspManager {
             self.check_injected_request(doc, version)?;
         }
         result
+    }
+
+    /// [`Self::call`], asked again when the server withdrew the answer because the text changed
+    /// (`ContentModified`, which arrives as a cancellation as no cancel token is passed).
+    /// The client advertises `retryOnContentModified` for the methods that use it.
+    async fn call_retrying<P: Serialize + Clone, R: DeserializeOwned>(
+        &self,
+        t: &Target,
+        method: &str,
+        params: P,
+        timeout: Duration,
+    ) -> IdeResult<R> {
+        let mut attempt = 0;
+        loop {
+            match self.call(t, method, params.clone(), None, timeout).await {
+                Err(e) if e.kind == ErrorKind::Cancelled && attempt < STALE_RETRIES => {
+                    attempt += 1;
+                    tokio::time::sleep(STALE_RETRY_DELAY).await;
+                }
+                result => return result,
+            }
+        }
     }
 
     // ---- features ----
@@ -2915,11 +2941,10 @@ impl LspManager {
             async move {
                 (
                     t,
-                    self.call::<_, Option<Vec<lsp::InlayHint>>>(
+                    self.call_retrying::<_, Option<Vec<lsp::InlayHint>>>(
                         t,
                         "textDocument/inlayHint",
                         params,
-                        None,
                         DEFAULT_TIMEOUT,
                     )
                     .await,
@@ -2950,7 +2975,8 @@ impl LspManager {
             self.ready_targets(&snap.servers, |c| c.semantic_tokens_full() && c.semantic_legend.is_some()).await;
         let Some(t) = targets.first() else { return Ok(None) };
         let params = json!({ "textDocument": snap.ident() });
-        let r: Option<Value> = self.call(t, "textDocument/semanticTokens/full", params, None, DEFAULT_TIMEOUT).await?;
+        let r: Option<Value> =
+            self.call_retrying(t, "textDocument/semanticTokens/full", params, DEFAULT_TIMEOUT).await?;
         let Some(data) = r.as_ref().and_then(|v| v.get("data")).and_then(Value::as_array) else { return Ok(None) };
         let data: Vec<i64> = data.iter().map(|n| n.as_i64().unwrap_or(0)).collect();
         let (enc, legend) = {
@@ -2971,7 +2997,7 @@ impl LspManager {
             let params = json!({ "textDocument": snap.ident() });
             async move {
                 let lenses = self
-                    .call::<_, Option<Vec<lsp::CodeLens>>>(t, "textDocument/codeLens", params, None, DEFAULT_TIMEOUT)
+                    .call_retrying::<_, Option<Vec<lsp::CodeLens>>>(t, "textDocument/codeLens", params, DEFAULT_TIMEOUT)
                     .await?;
                 let lenses = lenses.unwrap_or_default();
                 if !t.caps().has_sub("codeLensProvider", "resolveProvider") {
