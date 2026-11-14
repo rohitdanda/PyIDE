@@ -749,9 +749,14 @@ impl LspManager {
         if self.shutting_down.load(Ordering::Acquire) || !self.execution_allowed.load(Ordering::Acquire) {
             return;
         }
+        // A server dropped meanwhile (disabled in settings, shadowed by another) must not come
+        // back as a process nothing lists, serves or stops: a crash backoff can outlive it.
+        if !self.servers.lock().iter().any(|s| s.id == server.id) {
+            return;
+        }
         let workspace = is_local_jdtls(&server.config).then(|| self.jdtls_workspace_state());
         if let Some(state) = &workspace {
-            if state.transitioning || !self.servers.lock().iter().any(|s| s.id == server.id) {
+            if state.transitioning {
                 return;
             }
             let (shared, roots) = self.desired_jdtls_workspace();

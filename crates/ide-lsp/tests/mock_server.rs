@@ -2186,6 +2186,23 @@ async fn a_failed_initialize_is_reported_with_its_reason_and_gives_up() {
     assert_eq!(s.launches.load(Ordering::SeqCst), 4, "initial start + 3 restarts");
 }
 
+/// A server disabled in settings while its crash backoff is still sleeping stays gone: the
+/// pending restart must not bring it back as a process nothing lists or stops.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_disabled_during_its_crash_backoff_does_not_restart() {
+    let h = harness(&[("mock", incremental_caps()), ("other", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.peer().kill();
+    eventually(|| h.statuses("mock").contains(&ServerStatus::Crashed)).await;
+    h.mgr.set_servers_hook(Box::new(|_, configs| configs.iter().filter(|c| c.name == "other").cloned().collect()));
+    h.mgr.reconfigure().await;
+    eventually(|| h.removed("mock")).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1, "no restart after the server was dropped");
+}
+
 /// The whole workspace root deleted: the server can never start again
 /// (its cwd is gone), so the crash drops the entry instead of restarting.
 #[tokio::test(flavor = "multi_thread")]
