@@ -2126,6 +2126,37 @@ async fn gives_up_after_repeated_crashes_and_manual_restart_works() {
     assert_eq!(h.mgr.servers()[0].status, ServerStatus::Ready);
 }
 
+/// One malformed diagnostic costs only itself, not the file's other problems.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_malformed_diagnostic_does_not_drop_the_others() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (_, path) = h.open("a.mk", "one");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let uri = uri_of(&path);
+    let range = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":1}});
+    h.launcher
+        .state("mock")
+        .peer()
+        .notify(
+            "textDocument/publishDiagnostics",
+            json!({ "uri": uri, "diagnostics": [
+                { "range": range, "message": "first" },
+                { "message": "no range" },
+                { "range": range, "message": 7 },
+                { "range": range, "message": "last" }] }),
+        )
+        .unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| match e {
+            IdeEvent::Diagnostics { items, .. } => {
+                items.iter().map(|d| d.message.as_str()).collect::<Vec<_>>() == ["first", "last"]
+            }
+            _ => false,
+        })
+    })
+    .await;
+}
+
 /// The `initialize` error is the crash report's reason, not "terminated unexpectedly", and
 /// a server that never gets past `initialize` gives up like any other crash loop.
 #[tokio::test(flavor = "multi_thread")]

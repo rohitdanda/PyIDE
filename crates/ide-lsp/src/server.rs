@@ -369,6 +369,13 @@ impl Server {
         self.running().filter(|r| r.generation == generation)
     }
 
+    /// Instance `generation` is starting or running: not stopped, crashed or replaced.
+    /// Work it reports before it is ready (a Gradle import answers `initialize` late) still counts.
+    pub fn is_live(&self, generation: u64) -> bool {
+        let st = self.state.lock();
+        st.generation == generation && matches!(st.conn, Conn::Starting | Conn::Ready(_))
+    }
+
     /// Waits through startup or a planned restart; returns the instance once ready.
     pub async fn wait_ready(&self, timeout: Duration) -> Option<Running> {
         let mut rx = self.phase.subscribe();
@@ -1079,6 +1086,17 @@ mod tests {
             s.state.lock().conn = Conn::Idle;
         }
         assert!(matches!(s.state.lock().conn, Conn::Idle));
+    }
+
+    #[test]
+    fn an_instance_is_live_from_its_start_until_it_is_retired() {
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let s = server();
+        let generation = s.begin_start().unwrap();
+        assert!(s.is_live(generation), "still starting: its progress (an import) is being watched");
+        assert!(!s.is_live(generation + 1));
+        assert!(s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, None));
+        assert!(!s.is_live(generation));
     }
 
     #[test]
