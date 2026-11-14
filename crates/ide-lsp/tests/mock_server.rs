@@ -2076,6 +2076,29 @@ async fn crash_restarts_and_reopens_documents() {
     assert_eq!(hover.contents.value, "hi");
 }
 
+/// A restart during a long start (a project import) returns when the instance is up and
+/// running, and does not hold up `reconfigure` and `shutdown_all` meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_does_not_hold_the_reconfigure_lock_while_the_server_starts() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let gate = Arc::new(Gate::default());
+    *s.initialize_gate.lock() = Some(gate.clone());
+    let id = h.mgr.servers()[0].id;
+    let restart = tokio::spawn({
+        let mgr = h.mgr.clone();
+        async move { mgr.restart(id).await }
+    });
+    eventually(|| gate.entered()).await;
+    let reconfigured = tokio::time::timeout(Duration::from_secs(2), h.mgr.reconfigure()).await;
+    gate.open();
+    reconfigured.expect("a restart still waiting for the server to start must not block reconfigure");
+    restart.await.unwrap().unwrap();
+    assert_eq!(h.mgr.servers()[0].status, ServerStatus::Ready);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn gives_up_after_repeated_crashes_and_manual_restart_works() {
     let h = harness(&[("mock", incremental_caps())]);

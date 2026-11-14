@@ -3894,28 +3894,35 @@ impl LspManager {
     }
 
     pub async fn restart(&self, server: ide_core::ServerId) -> IdeResult<()> {
-        let _reconfigure = self.reconfigure_lock.lock().await;
-        let s = self
-            .servers
-            .lock()
-            .iter()
-            .find(|s| s.id == server)
-            .cloned()
-            .ok_or_else(|| IdeError::not_found(format!("unknown language server {server}")))?;
-        if !s.root.is_dir() {
-            return Err(IdeError::unavailable(format!(
-                "the workspace root of {} is gone: {}",
-                s.name,
-                s.root.display()
-            )));
-        }
-        self.stop_instance(&s, false).await;
-        s.reset_for_restart();
-        self.ensure_started(&s);
-        // Started again: it shadows the fallbacks that took over while it was down.
-        self.detach_shadowed_fallbacks().await;
+        let s = {
+            // Only the restart itself holds the lock: a start can take minutes (a Gradle or
+            // Maven import), and `reconfigure` and `shutdown_all` wait for it.
+            let _reconfigure = self.reconfigure_lock.lock().await;
+            let s = self
+                .servers
+                .lock()
+                .iter()
+                .find(|s| s.id == server)
+                .cloned()
+                .ok_or_else(|| IdeError::not_found(format!("unknown language server {server}")))?;
+            if !s.root.is_dir() {
+                return Err(IdeError::unavailable(format!(
+                    "the workspace root of {} is gone: {}",
+                    s.name,
+                    s.root.display()
+                )));
+            }
+            self.stop_instance(&s, false).await;
+            s.reset_for_restart();
+            self.ensure_started(&s);
+            // Started again: it shadows the fallbacks that took over while it was down.
+            self.detach_shadowed_fallbacks().await;
+            s
+        };
         match s.wait_ready(Duration::from_secs(60)).await {
             Some(_) => Ok(()),
+            // Still importing the project: the restart worked, the server is just not ready yet.
+            None if s.is_starting() => Ok(()),
             None => {
                 Err(IdeError::unavailable(s.status_message().unwrap_or_else(|| format!("{} failed to start", s.name))))
             }
