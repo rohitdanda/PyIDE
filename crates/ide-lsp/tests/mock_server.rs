@@ -2998,6 +2998,49 @@ async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     assert!(h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.is_ok());
 }
 
+/// A server that is installed but cannot run (crashed for good, or its configuration
+/// can't launch it) hides its fallbacks no longer than one that is missing.
+#[tokio::test(flavor = "multi_thread")]
+async fn fallback_servers_take_over_from_a_preferred_one_that_crashed_for_good() {
+    let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
+    let (doc, path) = h.open("a.mk", "x");
+    let main = h.launcher.state("main");
+    let count = |status| h.statuses("main").iter().filter(|s| **s == status).count();
+    for n in 1..=4 {
+        eventually(|| count(ServerStatus::Ready) == n).await;
+        // Restarting after a crash is not giving up: the fallback stays away.
+        assert!(h.statuses("alt").is_empty(), "alt started after crash {}", n - 1);
+        main.peer().kill();
+        eventually(|| count(ServerStatus::Crashed) == n).await;
+    }
+    h.wait_status("alt", ServerStatus::Ready).await;
+    let uri = uri_of(&path);
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
+    assert!(h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.is_ok());
+
+    // Restarting the preferred one by hand gives the documents back to it.
+    let id = h.mgr.servers().into_iter().find(|s| s.name == "main").unwrap().id;
+    h.mgr.restart(id).await.unwrap();
+    eventually(|| h.removed("alt")).await;
+    assert_eq!(h.mgr.servers().iter().filter(|s| s.name == "alt").count(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fallback_servers_take_over_from_a_preferred_one_that_cannot_be_launched() {
+    let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
+    h.mgr.set_config_hook(Box::new(|cfg, _| {
+        if cfg.name == "main" {
+            cfg.launch_error = Some("needs JDK 21".into());
+        }
+    }));
+    let (doc, path) = h.open("a.mk", "x");
+    h.wait_status("main", ServerStatus::Misconfigured).await;
+    h.wait_status("alt", ServerStatus::Ready).await;
+    let uri = uri_of(&path);
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
+    assert!(h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.is_ok());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_requiring_a_root_marker_serves_only_files_below_one() {
     // `framework` next to `main` (one instance for the whole project), like the

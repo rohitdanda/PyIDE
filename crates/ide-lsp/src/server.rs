@@ -327,6 +327,13 @@ impl Server {
         matches!(self.state.lock().conn, Conn::Starting)
     }
 
+    /// The server will not run until something changes: its binary is missing, its
+    /// configuration can't launch it, or it crashed too often (or its build expired).
+    /// Servers that crashed and are about to restart are not given up on.
+    pub fn gave_up(&self) -> bool {
+        matches!(self.state.lock().conn, Conn::Missing | Conn::Failed)
+    }
+
     /// The instance told `initialized`, ready or not.
     pub fn instance(&self) -> Option<Running> {
         self.running().or_else(|| self.initializing.lock().clone())

@@ -654,8 +654,9 @@ impl LspManager {
     }
 
     /// The servers serving `path`: every regular one, and each `fallback` one
-    /// only while all servers listed before it are missing. One that requires a
-    /// root marker serves only files below one, and stands in for no other.
+    /// only while all servers listed before it have given up (missing, not
+    /// launchable, or crashed for good). One that requires a root marker serves
+    /// only files below one, and stands in for no other.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
         if let Some(servers) = self.arduino_servers(language, path) {
             return servers;
@@ -672,7 +673,7 @@ impl LspManager {
                 continue;
             }
             let server = self.server_for(sc, language, path);
-            available_before |= !sc.require_root_marker && server.status() != ide_core::event::ServerStatus::Missing;
+            available_before |= !sc.require_root_marker && !server.gave_up();
             out.push(server);
         }
         out
@@ -861,24 +862,28 @@ impl LspManager {
             }
             Err(LaunchError::Config(message)) => {
                 tracing::warn!("{}: {message}", server.name);
-                server.fail_start(
+                if server.fail_start(
                     generation,
                     Conn::Failed,
                     &self.sink,
                     ide_core::event::ServerStatus::Misconfigured,
                     Some(message),
-                );
+                ) {
+                    self.attach_fallbacks();
+                }
                 return;
             }
             Err(LaunchError::Failed(message)) => {
                 tracing::warn!("{}: {message}", server.name);
-                server.fail_start(
+                if server.fail_start(
                     generation,
                     Conn::Failed,
                     &self.sink,
                     ide_core::event::ServerStatus::Crashed,
                     Some(message),
-                );
+                ) {
+                    self.attach_fallbacks();
+                }
                 return;
             }
         };
@@ -1008,11 +1013,15 @@ impl LspManager {
             self.forget(std::slice::from_ref(&server));
             return;
         }
-        if let Some(delay) = delay {
-            tokio::time::sleep(delay).await;
-            if server.is_idle_gen(generation) {
-                self.ensure_started(&server);
+        match delay {
+            Some(delay) => {
+                tokio::time::sleep(delay).await;
+                if server.is_idle_gen(generation) {
+                    self.ensure_started(&server);
+                }
             }
+            // Gave up (crashed repeatedly, or its build expired): the fallbacks it hid take over.
+            None => self.attach_fallbacks(),
         }
     }
 
@@ -3894,6 +3903,8 @@ impl LspManager {
         self.stop_instance(&s, false).await;
         s.reset_for_restart();
         self.ensure_started(&s);
+        // Started again: it shadows the fallbacks that took over while it was down.
+        self.detach_shadowed_fallbacks().await;
         match s.wait_ready(Duration::from_secs(60)).await {
             Some(_) => Ok(()),
             None => {
