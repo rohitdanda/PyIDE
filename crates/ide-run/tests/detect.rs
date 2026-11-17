@@ -451,6 +451,48 @@ fn spring_boot_modules_inherit_the_plugin_from_their_parent_build() {
 }
 
 #[test]
+fn spring_boot_annotations_stay_in_the_project_and_chains_are_bounded() {
+    let parent = "<project><packaging>pom</packaging><modules><module>app</module></modules><build><plugins><plugin>\
+                  <artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>";
+    let app = |ann: &str| {
+        format!("package demo;\n{ann}\npublic class App {{\n  public static void main(String[] a) {{}}\n}}\n")
+    };
+
+    // `@.tmp.outside….Evil` names an absolute path: it must not reach a file outside the project.
+    let outside = tempfile::Builder::new().prefix("outside").tempdir().unwrap();
+    let real = std::fs::canonicalize(outside.path()).unwrap();
+    std::fs::create_dir_all(real.join("x")).unwrap();
+    std::fs::write(real.join("x/Evil.java"), "package x;\n@SpringBootApplication\npublic @interface Evil {}\n")
+        .unwrap();
+    let escaped = real.join("x/Evil").to_string_lossy().replace('/', ".");
+    assert!(!escaped.contains(".."), "{escaped}");
+    let main = app(&format!("@{escaped}"));
+    let dir =
+        project(&[("pom.xml", parent), ("app/pom.xml", "<project/>"), ("app/src/main/java/demo/App.java", &main)]);
+    assert!(!detect(dir.path()).iter().any(|c| c.kind == "spring-boot"));
+
+    // A chain of project meta-annotations is followed only so deep.
+    let chain = |len: usize| {
+        let mut files = vec![
+            ("pom.xml".to_owned(), parent.to_owned()),
+            ("app/pom.xml".to_owned(), "<project/>".to_owned()),
+            ("app/src/main/java/demo/App.java".to_owned(), app("@A0")),
+        ];
+        for i in 0..len {
+            let ann = if i + 1 == len { "@SpringBootApplication".to_owned() } else { format!("@A{}", i + 1) };
+            files.push((
+                format!("app/src/main/java/demo/A{i}.java"),
+                format!("package demo;\n{ann}\npublic @interface A{i} {{}}\n"),
+            ));
+        }
+        let files: Vec<(&str, &str)> = files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+        detect(project(&files).path()).iter().any(|c| c.kind == "spring-boot")
+    };
+    assert!(chain(2));
+    assert!(!chain(40));
+}
+
+#[test]
 fn go_projects() {
     let dir = project(&[
         ("go.mod", "module example.com/x\n"),

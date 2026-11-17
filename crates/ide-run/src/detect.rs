@@ -669,6 +669,20 @@ struct BootAnnotations {
     /// `src/main/{java,kotlin}` of every module, where a project annotation is looked up.
     roots: Vec<PathBuf>,
     known: HashMap<String, bool>,
+    /// Annotations being followed right now: a chain of meta-annotations stops at [`MAX_META_DEPTH`].
+    depth: usize,
+}
+
+/// How deep a chain of project meta-annotations is followed (Spring's own stay well below).
+const MAX_META_DEPTH: usize = 8;
+
+/// `a.b.C`: dot-separated Java identifiers, so the name maps to a file under a source root.
+fn is_qualified_name(name: &str) -> bool {
+    name.split('.').all(|part| {
+        let mut chars = part.chars();
+        chars.next().is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$')
+            && chars.all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+    })
 }
 
 const BOOT_ANNOTATIONS: [&str; 2] = ["SpringBootApplication", "SpringCloudApplication"];
@@ -680,7 +694,7 @@ impl BootAnnotations {
             .flat_map(|m| ["java", "kotlin"].map(|l| m.join("src/main").join(l)))
             .filter(|d| d.is_dir())
             .collect();
-        Self { roots, known: HashMap::new() }
+        Self { roots, known: HashMap::new(), depth: 0 }
     }
 
     /// Whether `@name`, as written in a file of `package` with `imports`, marks an application.
@@ -699,7 +713,7 @@ impl BootAnnotations {
                 None => name.to_owned(),
             }
         };
-        if qualified.starts_with("org.springframework.") {
+        if qualified.starts_with("org.springframework.") || !is_qualified_name(&qualified) {
             return false;
         }
         if let Some(&known) = self.known.get(&qualified) {
@@ -714,12 +728,16 @@ impl BootAnnotations {
 
     /// The project declares annotation `qualified` and annotates it as an application.
     fn declares_boot_annotation(&mut self, qualified: &str) -> bool {
+        if self.depth >= MAX_META_DEPTH {
+            return false;
+        }
         let path = qualified.replace('.', "/");
         let simple = qualified.rsplit('.').next().unwrap_or(qualified);
         let source = self
             .roots
             .iter()
             .flat_map(|r| ["java", "kt"].map(|x| r.join(format!("{path}.{x}"))))
+            .filter(|f| fs::metadata(f).is_ok_and(|m| m.is_file() && m.len() <= 256 * 1024))
             .find_map(|f| read(&f));
         let Some(src) = source else { return false };
         let code = strip_line_comments(&src);
@@ -730,7 +748,11 @@ impl BootAnnotations {
             return false;
         };
         let (package, imports) = package_and_imports(&code);
-        annotations_in(&code[..decl]).iter().any(|a| self.marks_application(a, package.as_deref(), &imports))
+        self.depth += 1;
+        let found =
+            annotations_in(&code[..decl]).iter().any(|a| self.marks_application(a, package.as_deref(), &imports));
+        self.depth -= 1;
+        found
     }
 }
 

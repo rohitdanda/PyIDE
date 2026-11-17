@@ -126,6 +126,9 @@ jobs:
         if: steps.key.outputs.skip != 'true'
         run: |
           plugins/build.sh --check
+          # Sign what this job builds from the checked sources, never the committed dist/plugin.wasm:
+          # --check only compares source fingerprints, so it can't tell a swapped binary.
+          plugins/build.sh
           cargo build --release --locked -p ide-host --bin openidea-plugin
       - name: Pack, index and upload
         if: steps.key.outputs.skip != 'true'

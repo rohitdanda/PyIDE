@@ -1267,6 +1267,17 @@ impl PluginApi {
     }
     /// Where `cmd` runs: the project root it names, else the plugin's data
     /// directory (created as needed).
+    /// A process that runs in, or was asked for from, a project only runs once that project is trusted:
+    /// its files (configs, scripts) are the process's input.
+    fn require_trusted_process_root(&self, cwd: Option<&Path>, approval_root: Option<&Path>) -> Result<(), HostError> {
+        for root in [cwd, approval_root].into_iter().flatten() {
+            if !self.shared.workspace().is_some_and(|w| w.trusted(root)) {
+                return Err(HostError::Denied("project is not trusted".into()));
+            }
+        }
+        Ok(())
+    }
+
     fn spawn_dir(&self, cwd: Option<&Path>) -> PathBuf {
         let dir = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -2548,6 +2559,7 @@ impl HostApi for PluginApi {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ProcessOutput, HostError> {
+        self.require_trusted_process_root(cwd, cmd.approval_root.as_deref())?;
         let binary = self.approved_program_in_project(&cmd.program, cwd.or(cmd.approval_root.as_deref()))?;
         let cwd = self.spawn_dir(cwd);
         let mut command = StdCommand::new(&binary);
@@ -2641,6 +2653,7 @@ impl HostApi for PluginApi {
         }
     }
     fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError> {
+        self.require_trusted_process_root(cwd, cmd.approval_root.as_deref())?;
         let binary = self.approved_program_in_project(&cmd.program, cwd.or(cmd.approval_root.as_deref()))?;
         let cwd = self.spawn_dir(cwd);
         if client.is_some_and(|c| self.shared.closed_clients.lock().contains(c)) {
@@ -4419,6 +4432,26 @@ mod workbench_tests {
             Some(Arc::new(Workspace { root: root.into(), trusted, text: text.map(str::to_owned) }));
         PluginApi { pkg: Package::new(manifest, root.into()), shared }
     }
+    #[test]
+    fn processes_in_an_untrusted_project_are_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let cmd = || ProcessCommand { program: "lint".into(), ..Default::default() };
+        let untrusted = api(dir.path(), false, None);
+        let err = untrusted
+            .run_process(cmd(), Some(dir.path()), None, &CancellationToken::new(), Duration::from_secs(5))
+            .unwrap_err();
+        assert!(matches!(err, HostError::Denied(_)), "{err}");
+        let err = untrusted.start_process(cmd(), Some(dir.path()), None).unwrap_err();
+        assert!(matches!(err, HostError::Denied(_)), "{err}");
+        let asked_from = ProcessCommand { approval_root: Some(dir.path().into()), ..cmd() };
+        let err = untrusted.start_process(asked_from, None, None).unwrap_err();
+        assert!(matches!(err, HostError::Denied(_)), "{err}");
+        // Trusted: past the trust check, it fails on the program not being approved.
+        let trusted = api(dir.path(), true, None);
+        let err = trusted.start_process(cmd(), Some(dir.path()), None).unwrap_err();
+        assert!(!matches!(err, HostError::Denied(ref m) if m.contains("not trusted")), "{err}");
+    }
+
     #[test]
     fn command_exemption_requires_a_declared_unambiguous_owner() {
         let dir = tempfile::tempdir().unwrap();

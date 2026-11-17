@@ -286,7 +286,7 @@ impl AgentImage {
     /// bytes, and a pasted image's declared type can be wrong (a browser's JPEG or WebP copied as
     /// `image/png`). Falls back to `mime_type` for formats not recognised here.
     pub fn media_type(&self) -> &str {
-        let head = crate::acp::normalize_base64(&self.data[..self.data.len().min(16)]);
+        let head = crate::acp::normalize_base64(self.data.get(..self.data.len().min(16)).unwrap_or(""));
         match head.as_slice() {
             [0x89, b'P', b'N', b'G', ..] => "image/png",
             [0xFF, 0xD8, 0xFF, ..] => "image/jpeg",

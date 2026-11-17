@@ -1347,6 +1347,8 @@ fn image_blocks_declare_the_type_of_their_bytes() {
         // Not recognised: as declared.
         (image("image/bmp", "Qk02AAAAAAAAADYAAA"), "image/bmp"),
         (image("image/png", "AAA"), "image/png"),
+        // Not base64: a multi-byte character across byte 16 must not panic.
+        (image("image/png", "AAAAAAAAAAAAAAAé"), "image/png"),
     ];
     for (image, expected) in cases {
         let p = AgentPrompt { text: String::new(), files: vec![], images: vec![image] };
