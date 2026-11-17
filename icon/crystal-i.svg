@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 100 100" role="img" aria-label="OpenIDEA"><defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1"><stop offset="0" stop-color="#E57B3E"/><stop offset="1" stop-color="#6E2210"/></linearGradient>
+  <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.2"/><stop offset="0.45" stop-color="#fff" stop-opacity="0"/></linearGradient>
+  
+  <radialGradient id="orb" cx="0.4" cy="0.35" r="0.7"><stop offset="0" stop-color="#FFFFFF"/><stop offset="0.5" stop-color="#FFF0C8"/><stop offset="1" stop-color="#FFB25C"/></radialGradient>
+  <radialGradient id="orbglow" cx="0.5" cy="0.5" r="0.5"><stop offset="0.3" stop-color="#FFE7B0" stop-opacity="0.7"/><stop offset="1" stop-color="#FFE7B0" stop-opacity="0"/></radialGradient>
+</defs>
+<rect x="8" y="8" width="84" height="84" rx="21" fill="url(#bg)"/><circle cx="50" cy="28" r="13" fill="url(#orbglow)"/><circle cx="50" cy="28" r="6.8" fill="url(#orb)"/><polygon points="44,41 56,41 59,44 41,44" fill="#FFF6EC"/><polygon points="41,44 45.5,44 45.5,75 41,75" fill="#FFFFFF" fill-opacity="0.9"/><polygon points="45.5,44 54.5,44 54.5,75 45.5,75" fill="#FFD9B8"/><polygon points="54.5,44 59,44 59,75 54.5,75" fill="#E99A6B"/><polygon points="41,75 59,75 56,78 44,78" fill="#C2603A"/><path d="M48 47 V71" stroke="#fff" stroke-opacity="0.85" stroke-width="1.2" stroke-linecap="round"/><rect x="8" y="8" width="84" height="84" rx="21" fill="url(#sheen)"/>
+<rect x="8.5" y="8.5" width="83" height="83" rx="20.5" fill="none" stroke="#fff" stroke-opacity="0.14" stroke-width="1"/></svg>
